@@ -10,8 +10,18 @@ import os
 from dotenv import load_dotenv
 from postgres_recommender import PostgreSQLContentBasedRecommender   
 from mlops_manager import MLOpsManager
+from fastapi.responses import JSONResponse
 load_dotenv()  # Load .env file
 
+
+# Global variable to track retraining status
+retraining_status = {
+    "is_running": False,
+    "last_run": None,
+    "last_success": None,
+    "last_error": None,
+    "progress": ""
+}
 
 # Pydantic models for API
 class RecommendationRequest(BaseModel):
@@ -279,14 +289,51 @@ async def trigger_retrain(
     force: bool = False,
     rec: PostgreSQLContentBasedRecommender = Depends(get_recommender)
 ):
+    # Check if retraining is already in progress
+    if retraining_status["is_running"]:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "message": "Retraining is already in progress",
+                "status": "running",
+                "started_at": retraining_status["last_run"]
+            }
+        )
     """Trigger model retraining"""
     def retrain_model():
+        global retraining_status
         try:
-            logger.info("Manual retraining triggered")
+            # Update status
+            retraining_status["is_running"] = True
+            retraining_status["last_run"] = datetime.now()
+            retraining_status["last_error"] = None
+            retraining_status["progress"] = "Starting retraining..."
+            
+            logger.info(f"Manual retraining triggered (force={force})")
+            
+            # Update progress
+            retraining_status["progress"] = "Loading data from database..."
             rec.fit(force_retrain=force)
-            logger.info("Manual retraining completed")
+            # Update success status
+            retraining_status["last_success"] = datetime.now()
+            retraining_status["progress"] = "Retraining completed successfully"
+            
+            logger.info("Manual retraining completed successfully")
         except Exception as e:
-            logger.error(f"Manual retraining failed: {e}")
+            error_msg = f"Manual retraining failed: {str(e)}"
+            logger.error(error_msg)
+            
+            # Update error status
+            retraining_status["last_error"] = {
+                "message": error_msg,
+                "timestamp": datetime.now(),
+                "type": type(e).__name__
+            }
+            retraining_status["progress"] = f"Failed: {str(e)}"
+            
+        finally:
+            # Always reset running status
+            retraining_status["is_running"] = False
     
     background_tasks.add_task(retrain_model)
     
